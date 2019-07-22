@@ -2,6 +2,8 @@ package main
 
 import (
     "github.com/sparrc/go-ping"
+    ui "github.com/gizak/termui/v3"
+    "github.com/gizak/termui/v3/widgets"
     "fmt"
     "time"
     "sync"
@@ -49,12 +51,15 @@ func probe_ping(measurements chan Measurement, wg *sync.WaitGroup, address strin
             PacketsSent: stats.PacketsSent,
             PacketsRecv: stats.PacketsRecv,
         }
-        measurements <- measurement
+
+        // call wg.Done() before the measurement is sent
+        // because reading from the channel will block anyways
         wg.Done()
+        measurements <- measurement
     }
 }
 
-func mainloop(interval time.Duration, settings *Settings, targets []Target) {
+func poll_targets(interval time.Duration, settings *Settings, targets []Target) {
     // start all measurements
     var wg sync.WaitGroup
     for _, target := range targets {
@@ -68,7 +73,6 @@ func mainloop(interval time.Duration, settings *Settings, targets []Target) {
     for range time.Tick(interval) {
         // wait for all the measurements to finish
         wg.Wait()
-        fmt.Println("all done")
 
         // FIXME DEBUG print results
         for _, target := range targets {
@@ -85,7 +89,27 @@ func mainloop(interval time.Duration, settings *Settings, targets []Target) {
 	}
 }
 
+func poll_ui(stopped chan struct{}) {
+	for e := range ui.PollEvents() {
+		if e.Type == ui.KeyboardEvent {
+            close(stopped)
+		}
+	}
+}
+
+func display_measurements() {
+    p := widgets.NewParagraph()
+	p.Text = "Hello World!"
+	p.SetRect(0, 0, 25, 5)
+
+	ui.Render(p)
+}
+
 func main() {
+    // used to terminate gracefully
+    stopped := make(chan struct{})
+
+    // basic settings
     interval := time.Duration(time.Second)
     count := 5
 
@@ -93,6 +117,7 @@ func main() {
     settings.Timeout = interval
     settings.Count = count
 
+    // FIXME DEBUG
     var targets []Target
     testtarget := Target{
         Address: "129.143.2.1",
@@ -107,5 +132,18 @@ func main() {
     targets = append(targets, testtarget)
     targets = append(targets, testtarget2)
 
-    mainloop(time.Duration(time.Second), &settings, targets)
+	// start the UI
+	if err := ui.Init(); err != nil {
+		fmt.Printf("failed to initialize termui: %v", err)
+	}
+	defer ui.Close()
+
+    // enter the polling main loop
+    go poll_targets(time.Duration(time.Second), &settings, targets)
+	go poll_ui(stopped)
+
+    select {
+        case <-stopped:
+            break
+    }
 }
