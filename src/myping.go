@@ -6,6 +6,7 @@ import (
     "github.com/gizak/termui/v3/widgets"
     "fmt"
     "time"
+    "sync"
 )
 
 type Settings struct {
@@ -21,6 +22,7 @@ type Measurement struct {
 }
 
 type Target struct {
+    sync.Mutex
     Address string
     Method int
     ProbeResults chan Measurement
@@ -57,7 +59,9 @@ func probeTarget(target *Target, settings *Settings) {
     if target.Method == ICMP {
         result = probeICMP(target.Address, settings)
     }
-    target.ProbeResults <- result
+    target.Lock()
+    target.Data = append(target.Data, result)
+    target.Unlock()
 }
 
 func updateLoop(interval time.Duration, targets []*Target, settings *Settings) {
