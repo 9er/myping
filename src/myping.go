@@ -6,7 +6,6 @@ import (
     "github.com/gizak/termui/v3/widgets"
     "fmt"
     "time"
-    "sync"
 )
 
 type Settings struct {
@@ -24,7 +23,8 @@ type Measurement struct {
 type Target struct {
     Address string
     Method int
-    Measurements chan Measurement
+    ProbeResults chan Measurement
+    Data []Measurement
 }
 
 const (
@@ -32,52 +32,45 @@ const (
     TCP
 )
 
-func probe_ping(measurements chan Measurement, wg *sync.WaitGroup, address string, settings *Settings) {
-    defer wg.Done()
-
-    for {
-        pinger, err := ping.NewPinger(address)
-        if err != nil {
-            panic(err)
-        }
-        pinger.SetPrivileged(true)
-        pinger.Count = settings.Count
-        pinger.Interval = time.Duration(1)
-        pinger.Timeout = time.Duration(settings.Timeout)
-        pinger.Run()
-        stats := pinger.Statistics()
-        measurement := Measurement{
-            RTT: stats.AvgRtt,
-            PacketsSent: stats.PacketsSent,
-            PacketsRecv: stats.PacketsRecv,
-        }
-
-        // call wg.Done() before the measurement is sent
-        // because reading from the channel will block anyways
-        wg.Done()
-        measurements <- measurement
+func probeICMP(address string, settings *Settings) Measurement {
+    pinger, err := ping.NewPinger(address)
+    if err != nil {
+        panic(err)
     }
+    pinger.SetPrivileged(true)
+    pinger.Count = settings.Count
+    pinger.Interval = time.Duration(1)
+    pinger.Timeout = time.Duration(settings.Timeout)
+    pinger.Run()
+    stats := pinger.Statistics()
+    measurement := Measurement{
+        RTT: stats.AvgRtt,
+        PacketsSent: stats.PacketsSent,
+        PacketsRecv: stats.PacketsRecv,
+    }
+
+    return measurement
 }
 
-func poll_targets(interval time.Duration, settings *Settings, targets []Target) {
+func probeTarget(target *Target, settings *Settings) {
+    var result Measurement
+    if target.Method == ICMP {
+        result = probeICMP(target.Address, settings)
+    }
+    target.ProbeResults <- result
+}
+
+func updateLoop(interval time.Duration, targets []*Target, settings *Settings) {
     // start all measurements
-    var wg sync.WaitGroup
     for _, target := range targets {
-        if target.Method == ICMP {
-            wg.Add(1)
-            go probe_ping(target.Measurements , &wg, target.Address, settings)
-        }
+        go probeTarget(target, settings)
     }
 
     // periodically query the results (autostarts new measurements)
     for range time.Tick(interval) {
-        // wait for all the measurements to finish
-        wg.Wait()
-
         // FIXME DEBUG print results
         for _, target := range targets {
-            wg.Add(1)
-            measurement := <-target.Measurements
+            measurement := <-target.ProbeResults
             if measurement.PacketsSent == measurement.PacketsRecv {
                 fmt.Printf("!")
             } else if (measurement.PacketsRecv == 0) {
@@ -89,7 +82,7 @@ func poll_targets(interval time.Duration, settings *Settings, targets []Target) 
 	}
 }
 
-func poll_ui(stopped chan struct{}) {
+func pollUiEvents(stopped chan struct{}) {
 	for e := range ui.PollEvents() {
 		if e.Type == ui.KeyboardEvent {
             close(stopped)
@@ -97,12 +90,16 @@ func poll_ui(stopped chan struct{}) {
 	}
 }
 
-func display_measurements() {
-    p := widgets.NewParagraph()
-	p.Text = "Hello World!"
-	p.SetRect(0, 0, 25, 5)
+func displayList(targets []Target) {
+    list := widgets.NewList()
+    list.WrapText = false
+	list.Title = "Targets"
+    for _, target := range targets {
+        list.Rows = append(list.Rows, target.Address)
+    }
+    list.SetRect(0, 0, 25, 8)
 
-	ui.Render(p)
+	ui.Render(list)
 }
 
 func main() {
@@ -118,29 +115,31 @@ func main() {
     settings.Count = count
 
     // FIXME DEBUG
-    var targets []Target
+    var targets []*Target
     testtarget := Target{
         Address: "129.143.2.1",
         Method: ICMP,
-        Measurements: make(chan Measurement),
+        ProbeResults: make(chan Measurement),
     }
     testtarget2 := Target{
         Address: "129.143.2.2",
         Method: ICMP,
-        Measurements: make(chan Measurement),
+        ProbeResults: make(chan Measurement),
     }
-    targets = append(targets, testtarget)
-    targets = append(targets, testtarget2)
+    targets = append(targets, &testtarget)
+    targets = append(targets, &testtarget2)
 
 	// start the UI
-	if err := ui.Init(); err != nil {
-		fmt.Printf("failed to initialize termui: %v", err)
-	}
-	defer ui.Close()
+	//if err := ui.Init(); err != nil {
+	//	fmt.Printf("failed to initialize termui: %v", err)
+	//}
+	//defer ui.Close()
 
     // enter the polling main loop
-    go poll_targets(time.Duration(time.Second), &settings, targets)
-	go poll_ui(stopped)
+    go updateLoop(time.Duration(time.Second), targets, &settings)
+	go pollUiEvents(stopped)
+
+    //displayList(targets)
 
     select {
         case <-stopped:
