@@ -7,7 +7,16 @@ import (
     "sync"
     "io"
     "os"
+    "syscall"
+    "unsafe"
 )
+
+type winsize struct {
+    Row    uint16
+    Col    uint16
+    Xpixel uint16
+    Ypixel uint16
+}
 
 type Settings struct {
     Timeout time.Duration
@@ -32,6 +41,16 @@ const (
     ICMP = iota
     TCP
 )
+
+func getWidth() int {
+    ws := &winsize{}
+    ret, _, err := syscall.Syscall(syscall.SYS_IOCTL, uintptr(syscall.Stdin), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(ws)))
+
+    if int(ret) == -1 {
+        panic(err)
+    }
+    return int(ws.Col)
+}
 
 func probeTarget(wg *sync.WaitGroup, target *Target, settings *Settings) {
     defer wg.Done()
@@ -128,10 +147,10 @@ func buildLine(description string, data []Measurement, maxdesc int, maxwidth int
 
 func displayStats(uiupdate chan struct{}, targets []*Target) {
     for range uiupdate {
-        // was: for { <- uiupdate
         for index, target := range targets {
+            width := getWidth()
             target.Lock()
-            line := buildLine(target.Address, target.Data, 14, 80)
+            line := buildLine(target.Address, target.Data, 14, width)
             target.Unlock()
             num := len(targets) - index
             // move cursor to the correct line
