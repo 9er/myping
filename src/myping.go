@@ -2,16 +2,17 @@ package main
 
 import (
     "github.com/sparrc/go-ping"
-    ui "github.com/gizak/termui/v3"
-    "github.com/gizak/termui/v3/widgets"
     "fmt"
     "time"
     "sync"
+    "io"
+    "os"
 )
 
 type Settings struct {
     Timeout time.Duration
     Interval time.Duration
+    PacketInterval time.Duration
     Count int
 }
 
@@ -24,8 +25,6 @@ type Measurement struct {
 type Target struct {
     sync.Mutex
     Address string
-    Method int
-    ProbeResults chan Measurement
     Data []Measurement
 }
 
@@ -34,16 +33,21 @@ const (
     TCP
 )
 
-func probeICMP(address string, settings *Settings) Measurement {
-    pinger, err := ping.NewPinger(address)
+func probeTarget(wg *sync.WaitGroup, target *Target, settings *Settings) {
+    defer wg.Done()
+
+    target.Lock()
+    pinger, err := ping.NewPinger(target.Address)
     if err != nil {
         panic(err)
     }
     pinger.SetPrivileged(true)
     pinger.Count = settings.Count
-    pinger.Interval = time.Duration(1)
+    pinger.Interval = settings.PacketInterval
     pinger.Timeout = time.Duration(settings.Timeout)
+
     pinger.Run()
+
     stats := pinger.Statistics()
     measurement := Measurement{
         RTT: stats.AvgRtt,
@@ -51,59 +55,99 @@ func probeICMP(address string, settings *Settings) Measurement {
         PacketsRecv: stats.PacketsRecv,
     }
 
-    return measurement
-}
-
-func probeTarget(target *Target, settings *Settings) {
-    var result Measurement
-    if target.Method == ICMP {
-        result = probeICMP(target.Address, settings)
-    }
-    target.Lock()
-    target.Data = append(target.Data, result)
+    target.Data = append(target.Data, measurement)
     target.Unlock()
 }
 
-func updateLoop(interval time.Duration, targets []*Target, settings *Settings) {
-    // start all measurements
-    for _, target := range targets {
-        go probeTarget(target, settings)
-    }
-
-    // periodically query the results (autostarts new measurements)
-    for range time.Tick(interval) {
-        // FIXME DEBUG print results
+func updateLoop(targets []*Target, uiupdate chan struct{}, settings *Settings) {
+    // periodically start new measurements
+    ticker := time.NewTicker(settings.Interval)
+    for range ticker.C {
+        wg := sync.WaitGroup{}
         for _, target := range targets {
-            measurement := <-target.ProbeResults
-            if measurement.PacketsSent == measurement.PacketsRecv {
-                fmt.Printf("!")
-            } else if (measurement.PacketsRecv == 0) {
-                fmt.Printf(".")
-            } else {
-                fmt.Printf("~")
-            }
+            wg.Add(1)
+            go probeTarget(&wg, target, settings)
         }
+        wg.Wait()
+        uiupdate <- struct{}{}
 	}
 }
 
-func pollUiEvents(stopped chan struct{}) {
-	for e := range ui.PollEvents() {
-		if e.Type == ui.KeyboardEvent {
-            close(stopped)
-		}
-	}
-}
+func buildLine(description string, data []Measurement, maxdesc int, maxwidth int) string {
+    spacing := 2
 
-func displayList(targets []Target) {
-    list := widgets.NewList()
-    list.WrapText = false
-	list.Title = "Targets"
-    for _, target := range targets {
-        list.Rows = append(list.Rows, target.Address)
+    var desccolor string
+    lastmeasurement := data[len(data)-1]
+    if lastmeasurement.PacketsSent == lastmeasurement.PacketsRecv {
+        desccolor = ""
+    } else if lastmeasurement.PacketsRecv == 0 {
+        desccolor = "\033[31m"
+    } else {
+        desccolor = "\033[33m"
     }
-    list.SetRect(0, 0, 25, 8)
 
-	ui.Render(list)
+    descpart := fmt.Sprintf(fmt.Sprintf("%%-%ds", maxdesc), description)
+
+    datalen := maxwidth - maxdesc - spacing
+    var trimmeddata []Measurement
+    if len(data) > datalen {
+        trimmeddata = data[len(data)-datalen:]
+    } else {
+        trimmeddata = data
+    }
+
+    var vispart string
+    if len(trimmeddata) < datalen {
+        // fill from the left with empty spaces
+        vispart = fmt.Sprintf(fmt.Sprintf("%%%ds", datalen - len(trimmeddata)), "")
+    }
+    for _, measurement := range trimmeddata {
+        //if measurement.PacketsSent == measurement.PacketsRecv {
+        //    vispart = vispart + "\033[32m!\033[0m"
+        //} else if measurement.PacketsRecv == 0 {
+        //    vispart = vispart + "\033[31m.\033[0m"
+        //} else {
+        //    vispart = vispart + "\033[33m~\033[0m"
+        //}
+        if measurement.PacketsSent == measurement.PacketsRecv {
+            if measurement.PacketsSent == 0 {
+                vispart = vispart + " "
+            } else {
+                vispart = vispart + "\033[32m█\033[0m"
+            }
+        } else if measurement.PacketsRecv == 0 {
+            vispart = vispart + "\033[41m \033[0m"
+        } else {
+            vispart = vispart + "\033[43m \033[0m"
+        }
+    }
+    // example output: "%s%2s%s"
+    formatstring := fmt.Sprintf("%%s%%s\033[0m%%%ds%%s\n", spacing)
+    return fmt.Sprintf(formatstring, desccolor, descpart, "", vispart)
+}
+
+func displayStats(uiupdate chan struct{}, targets []*Target) {
+    for range uiupdate {
+        // was: for { <- uiupdate
+        for index, target := range targets {
+            target.Lock()
+            line := buildLine(target.Address, target.Data, 14, 80)
+            target.Unlock()
+            num := len(targets) - index
+            // move cursor to the correct line
+            io.WriteString(os.Stdout, fmt.Sprintf("\033[%dA", num))
+            io.WriteString(os.Stdout, line)
+            // reset cursor
+            io.WriteString(os.Stdout, "\0338")
+        }
+    }
+}
+
+func makeTarget(address string, settings *Settings) *Target {
+    target := Target{
+        Address: address,
+    }
+    return &target
 }
 
 func main() {
@@ -111,37 +155,31 @@ func main() {
     stopped := make(chan struct{})
 
     // basic settings
-    interval := time.Duration(time.Second)
+    interval := time.Second
     count := 5
 
     settings := Settings{}
-    settings.Timeout = interval
+    settings.Interval = interval
+    settings.PacketInterval = time.Duration(interval / time.Duration(2 * count))
+    settings.Timeout = time.Duration(interval / 2)
     settings.Count = count
 
     // FIXME DEBUG
     var targets []*Target
-    testtarget := Target{
-        Address: "129.143.2.1",
-        Method: ICMP,
-        ProbeResults: make(chan Measurement),
-    }
-    testtarget2 := Target{
-        Address: "129.143.2.2",
-        Method: ICMP,
-        ProbeResults: make(chan Measurement),
-    }
-    targets = append(targets, &testtarget)
-    targets = append(targets, &testtarget2)
+    targets = append(targets, makeTarget("129.143.2.1", &settings))
+    targets = append(targets, makeTarget("129.143.4.2", &settings))
+    targets = append(targets, makeTarget("8.8.8.8", &settings))
+    targets = append(targets, makeTarget("1.1.1.1", &settings))
 
-	// start the UI
-	//if err := ui.Init(); err != nil {
-	//	fmt.Printf("failed to initialize termui: %v", err)
-	//}
-	//defer ui.Close()
+    for range targets {
+        fmt.Println("")
+    }
+    io.WriteString(os.Stdout, "\0337")
+    uiupdate := make(chan struct{})
 
     // enter the polling main loop
-    go updateLoop(time.Duration(time.Second), targets, &settings)
-	go pollUiEvents(stopped)
+    go updateLoop(targets, uiupdate, &settings)
+    go displayStats(uiupdate, targets)
 
     //displayList(targets)
 
