@@ -3,6 +3,7 @@ package main
 import (
     "github.com/sparrc/go-ping"
     "fmt"
+    "flag"
     "time"
     "sync"
     "io"
@@ -180,22 +181,28 @@ func main() {
     // used to terminate gracefully
     stopped := make(chan struct{})
 
-    // basic settings
-    interval := time.Second
-    count := 5
+    // command line arguments
+    interval := flag.Float64("i", 1.0, "update interval")
+    count := flag.Int("c", 3, "echo requests per interval")
+    flag.Parse()
 
     settings := Settings{}
-    settings.Interval = interval
-    settings.PacketInterval = time.Duration(interval / time.Duration(2 * count))
-    settings.Timeout = time.Duration(interval / 2)
-    settings.Count = count
+    settings.Interval = time.Duration(*interval * float64(time.Second))
+    settings.PacketInterval = time.Duration(int64(settings.Interval) / int64(2 * *count))
+    settings.Timeout = time.Duration(settings.Interval / 2)
+    settings.Count = *count
 
     // FIXME DEBUG
     var targets []*Target
-    targets = append(targets, makeTarget("129.143.2.1", &settings))
-    targets = append(targets, makeTarget("129.143.4.2", &settings))
-    targets = append(targets, makeTarget("8.8.8.8", &settings))
-    targets = append(targets, makeTarget("1.1.1.1", &settings))
+    for _, address := range flag.Args() {
+        targets = append(targets, makeTarget(address, &settings))
+    }
+    if len(targets) == 0 {
+        // nothing to do...
+        fmt.Printf("Usage of %s: [OPTIONS] target...\n", os.Args[0])
+        flag.PrintDefaults()
+        return
+    }
 
     for range targets {
         fmt.Println("")
