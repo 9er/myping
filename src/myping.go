@@ -96,13 +96,15 @@ func buildLine(description string, data []Measurement, maxdesc int, maxwidth int
     spacing := 2
 
     var desccolor string
-    lastmeasurement := data[len(data)-1]
-    if lastmeasurement.PacketsSent == lastmeasurement.PacketsRecv {
-        desccolor = ""
-    } else if lastmeasurement.PacketsRecv == 0 {
-        desccolor = "\033[31m"
-    } else {
-        desccolor = "\033[33m"
+    if len(data) > 0 {
+        lastmeasurement := data[len(data)-1]
+        if lastmeasurement.PacketsSent == lastmeasurement.PacketsRecv {
+            desccolor = ""
+        } else if lastmeasurement.PacketsRecv == 0 {
+            desccolor = "\033[31m"
+        } else {
+            desccolor = "\033[33m"
+        }
     }
 
     descpart := fmt.Sprintf(fmt.Sprintf("%%-%ds", maxdesc), description)
@@ -145,20 +147,25 @@ func buildLine(description string, data []Measurement, maxdesc int, maxwidth int
     return fmt.Sprintf(formatstring, desccolor, descpart, "", vispart)
 }
 
-func displayStats(uiupdate chan struct{}, targets []*Target) {
+func updateDisplay(targets []*Target) {
+    io.WriteString(os.Stdout, "\033[H\033[2J")
+    for index, target := range targets {
+        width := getWidth()
+        target.Lock()
+        line := buildLine(target.Address, target.Data, 14, width)
+        target.Unlock()
+        io.WriteString(os.Stdout, fmt.Sprintf("\033[%d;0H", index + 1))
+        io.WriteString(os.Stdout, line)
+    }
+}
+
+func uiLoop(uiupdate chan struct{}, targets []*Target) {
+    // fill the screen initially
+    updateDisplay(targets)
+
+    // wait for an update, then repaint the screen
     for range uiupdate {
-        for index, target := range targets {
-            width := getWidth()
-            target.Lock()
-            line := buildLine(target.Address, target.Data, 14, width)
-            target.Unlock()
-            num := len(targets) - index
-            // move cursor to the correct line
-            io.WriteString(os.Stdout, fmt.Sprintf("\033[%dA", num))
-            io.WriteString(os.Stdout, line)
-            // reset cursor
-            io.WriteString(os.Stdout, "\0338")
-        }
+        updateDisplay(targets)
     }
 }
 
@@ -193,12 +200,11 @@ func main() {
     for range targets {
         fmt.Println("")
     }
-    io.WriteString(os.Stdout, "\0337")
     uiupdate := make(chan struct{})
 
     // enter the polling main loop
     go updateLoop(targets, uiupdate, &settings)
-    go displayStats(uiupdate, targets)
+    go uiLoop(uiupdate, targets)
 
     //displayList(targets)
 
