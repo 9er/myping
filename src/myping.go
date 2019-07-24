@@ -109,6 +109,9 @@ func buildLine(description string, data []Measurement, maxdesc int, maxwidth int
     }
 
     descpart := fmt.Sprintf(fmt.Sprintf("%%-%ds", maxdesc), description)
+    if len(descpart) > maxdesc {
+        descpart = fmt.Sprintf("%s...", descpart[:maxdesc - 3])
+    }
 
     datalen := maxwidth - maxdesc - spacing
     var trimmeddata []Measurement
@@ -138,7 +141,7 @@ func buildLine(description string, data []Measurement, maxdesc int, maxwidth int
                 vispart = vispart + "\033[32m█\033[0m"
             }
         } else if measurement.PacketsRecv == 0 {
-            vispart = vispart + "\033[41m \033[0m"
+            vispart = vispart + "\033[31m█\033[0m"
         } else {
             vispart = vispart + "\033[43m \033[0m"
         }
@@ -153,7 +156,7 @@ func updateDisplay(targets []*Target) {
     for index, target := range targets {
         width := getWidth()
         target.Lock()
-        line := buildLine(target.Address, target.Data, 14, width)
+        line := buildLine(target.Address, target.Data, 18, width)
         target.Unlock()
         io.WriteString(os.Stdout, fmt.Sprintf("\033[%d;0H", index + 1))
         io.WriteString(os.Stdout, line)
