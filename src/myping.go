@@ -235,7 +235,6 @@ func uiLoop(uiupdate chan struct{}, store *DataStore, settings *Settings) {
     for range uiupdate {
         store.Lock()
         // reset the cursor and redraw
-        checkScreenSize(store, settings)
         io.WriteString(os.Stdout, "\033[u")
         drawDisplay(store, settings.ScreenWidth)
         store.Unlock()
@@ -280,6 +279,19 @@ func main() {
     }
 
     uiupdate := make(chan struct{})
+
+    // catch SIGWINCH (terminal resize), get the new terminal size and trigger a UI update
+    sigwinch := make(chan os.Signal)
+    signal.Notify(sigwinch, syscall.SIGWINCH)
+    go func() {
+        for {
+            <-sigwinch
+            store.Lock()
+            checkScreenSize(&store, &settings)
+            uiupdate <- struct{}{}
+            store.Unlock()
+        }
+    }()
 
     checkScreenSize(&store, &settings)
 
