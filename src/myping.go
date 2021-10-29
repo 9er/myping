@@ -304,9 +304,9 @@ func main() {
         }
         store.Targets = make([]*Target, len(lines))
         for index, line := range lines {
-            elements := strings.Split(line, " ")
+            elements := strings.SplitN(line, " ", 2)
             if len(elements) != 2 {
-                fmt.Printf("Error in target list: line should contain two strings, target and displayname, separated with space:\n%s\n", line)
+                fmt.Printf("Error in target list: line should contain, target and displayname, separated with space:\n%s\n", line)
                 return
             }
             target := makeTarget(elements[0], elements[1], &settings)
