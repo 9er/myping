@@ -122,18 +122,23 @@ func probeTarget(wg *sync.WaitGroup, target *Target, settings *Settings) {
 
 func updateLoop(store *DataStore, uiupdate chan struct{}, settings *Settings) {
     // periodically start new measurements
+    update(store, uiupdate, settings)
     ticker := time.NewTicker(settings.Interval)
     for range ticker.C {
-        store.Lock()
-        wg := sync.WaitGroup{}
-        for _, target := range store.Targets {
-            wg.Add(1)
-            go probeTarget(&wg, target, settings)
-        }
-        wg.Wait()
-        store.Unlock()
-        uiupdate <- struct{}{}
+        update(store, uiupdate, settings)
 	}
+}
+
+func update(store *DataStore, uiupdate chan struct{}, settings *Settings) {
+    store.Lock()
+    wg := sync.WaitGroup{}
+    for _, target := range store.Targets {
+        wg.Add(1)
+        go probeTarget(&wg, target, settings)
+    }
+    wg.Wait()
+    store.Unlock()
+    uiupdate <- struct{}{}
 }
 
 func buildLine(description string, target *Target, maxdesc uint16, maxwidth uint16) string {
