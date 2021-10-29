@@ -1,12 +1,14 @@
 package main
 
 import (
-    "github.com/sparrc/go-ping"
+    "github.com/go-ping/ping"
     "fmt"
     "flag"
     "time"
     "sync"
     "io"
+    "bufio"
+    "strings"
     "os"
     "os/signal"
     "syscall"
@@ -37,6 +39,7 @@ type Measurement struct {
 
 type Target struct {
     Address string
+    DisplayName string
     OldestMeasurement *Measurement
     NewestMeasurement *Measurement
     Size uint16
@@ -207,7 +210,7 @@ func buildLine(description string, target *Target, maxdesc uint16, maxwidth uint
 func drawDisplay(store *DataStore, width uint16) {
     // print one line for each target
     for index, target := range store.Targets {
-        line := buildLine(target.Address, target, uint16(18), width)
+        line := buildLine(target.DisplayName, target, uint16(18), width)
         io.WriteString(os.Stdout, fmt.Sprintf("\033[%d;0H", index + 1))
         io.WriteString(os.Stdout, line)
     }
@@ -241,9 +244,10 @@ func uiLoop(uiupdate chan struct{}, store *DataStore, settings *Settings) {
     }
 }
 
-func makeTarget(address string, settings *Settings) Target {
+func makeTarget(address string, displayname string, settings *Settings) Target {
     target := Target{
         Address: address,
+        DisplayName: displayname,
         Capacity: uint16(10),
     }
     return target
@@ -257,6 +261,7 @@ func main() {
     // command line arguments
     interval := flag.Float64("i", 1.0, "update interval")
     count := flag.Int("c", 3, "echo requests per interval")
+    targetfile := flag.String("f", "", "target list file (format: address displayname)")
     flag.Parse()
 
     settings := Settings{}
@@ -266,11 +271,44 @@ func main() {
     settings.Count = *count
 
     var store DataStore
-    store.Targets = make([]*Target, len(flag.Args()))
-    for index, address := range flag.Args() {
-        target := makeTarget(address, &settings)
-        store.Targets[index] = &target
+
+    if *targetfile == "" {
+        // no target file specified → read targets from cmdline arguments
+        store.Targets = make([]*Target, len(flag.Args()))
+        for index, address := range flag.Args() {
+            target := makeTarget(address, address, &settings)
+            store.Targets[index] = &target
+        }
+    } else {
+        // read targets from file
+        file, err := os.Open(*targetfile)
+        if err != nil {
+            fmt.Println("Unable to read target list file.")
+            fmt.Printf("Usage of %s: [OPTIONS] target...\n", os.Args[0])
+            flag.PrintDefaults()
+            return
+        }
+        reader := bufio.NewReader(file)
+        var lines []string
+        for {
+            line, _, err := reader.ReadLine()
+            if err == io.EOF {
+                 break
+            }
+            lines = append(lines, string(line))
+        }
+        store.Targets = make([]*Target, len(lines))
+        for index, line := range lines {
+            elements := strings.Split(line, " ")
+            if len(elements) != 2 {
+                fmt.Printf("Error in target list: line should contain two strings, target and displayname, separated with space:\n%s\n", line)
+                return
+            }
+            target := makeTarget(elements[0], elements[1], &settings)
+            store.Targets[index] = &target
+        }
     }
+
     if len(store.Targets) == 0 {
         // nothing to do...
         fmt.Printf("Usage of %s: [OPTIONS] target...\n", os.Args[0])
