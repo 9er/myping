@@ -301,16 +301,27 @@ func main() {
 			if err == io.EOF {
 				break
 			}
+			if strings.HasPrefix(string(line), "#") || len(line) == 0 {
+				// skip comments and empty lines
+				continue
+			}
 			lines = append(lines, string(line))
 		}
 		store.Targets = make([]*Target, len(lines))
 		for index, line := range lines {
 			elements := strings.SplitN(line, " ", 2)
-			if len(elements) != 2 {
-				fmt.Printf("Error in target list: line should contain, target and displayname, separated with space:\n%s\n", line)
+			var target Target
+			if len(elements) == 1 {
+				// only contains a target address/hostname, no displayname
+				target = makeTarget(elements[0], elements[0], &settings)
+			} else if len(elements) == 2 {
+				// target address + displayname
+				target = makeTarget(elements[0], elements[1], &settings)
+			} else {
+				// not sure how this could happen!?
+				fmt.Printf("Error in target list: line should contain, target and optionally a displayname, separated with space:\n%s\n", line)
 				return
 			}
-			target := makeTarget(elements[0], elements[1], &settings)
 			store.Targets[index] = &target
 		}
 	}
