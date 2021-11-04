@@ -1,4 +1,4 @@
-module sneuner.org/go/myping
+module github.com/9er/myping
 
 go 1.17
 
