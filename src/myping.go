@@ -1,21 +1,22 @@
 package main
 
 import (
-    "github.com/go-ping/ping"
-    "fmt"
-    "flag"
-    "time"
-    "sync"
-    "io"
     "bufio"
-    "strings"
+    "flag"
+    "fmt"
+    "github.com/go-ping/ping"
+    "io"
     "os"
     "os/signal"
+    "strings"
+    "sync"
     "syscall"
+    "time"
     "unsafe"
 )
 
 const VersionString = "v0.1"
+const TargetNameLength = 18
 
 type winsize struct {
     Row    uint16
@@ -30,57 +31,25 @@ type Settings struct {
     PacketInterval time.Duration
     Count int
     ScreenWidth uint16
+    TargetNameLength uint16
+    MeasurementCapacity uint16
 }
 
 type Measurement struct {
-    RTT time.Duration
+    AvgRTT time.Duration
     PacketsSent int
     PacketsRecv int
-    Next *Measurement
 }
 
 type Target struct {
     Address string
     DisplayName string
-    OldestMeasurement *Measurement
-    NewestMeasurement *Measurement
-    Size uint16
-    Capacity uint16
-}
-func (t *Target) AddMeasurement(newMeasurement *Measurement) {
-    if t.Size == uint16(0) {
-        t.OldestMeasurement = newMeasurement
-        t.NewestMeasurement = newMeasurement
-    }
-
-    t.NewestMeasurement.Next = newMeasurement
-    t.NewestMeasurement = newMeasurement
-    t.Size += 1
-    if t.Size > t.Capacity {
-        t.OldestMeasurement = t.OldestMeasurement.Next
-        t.Size -= 1
-    }
-}
-func (t *Target) SetCapacity(newCapacity uint16) {
-    if t.Size > newCapacity {
-        current := t.OldestMeasurement
-        for i := uint16(0); i < t.Size - newCapacity; i++ {
-            current = current.Next
-        }
-        t.Size = newCapacity
-        t.OldestMeasurement = current
-    }
-    t.Capacity = newCapacity
+    Measurements []Measurement
 }
 
 type DataStore struct {
     sync.Mutex
     Targets []*Target
-}
-func (s *DataStore) SetTargetCapacities(newCapacity uint16) {
-    for _, target := range s.Targets {
-        target.SetCapacity(newCapacity)
-    }
 }
 
 const (
@@ -114,12 +83,16 @@ func probeTarget(wg *sync.WaitGroup, target *Target, settings *Settings) {
 
     stats := pinger.Statistics()
     measurement := Measurement{
-        RTT: stats.AvgRtt,
+        AvgRTT:      stats.AvgRtt,
         PacketsSent: stats.PacketsSent,
         PacketsRecv: stats.PacketsRecv,
     }
 
-    target.AddMeasurement(&measurement)
+    target.Measurements = append(target.Measurements, measurement)
+    // trim the measurement slice to the maximum capacity length
+    if uint16(len(target.Measurements)) > settings.MeasurementCapacity {
+        target.Measurements = target.Measurements[uint16(len(target.Measurements))-settings.MeasurementCapacity:]
+    }
 }
 
 func updateLoop(store *DataStore, uiupdate chan struct{}, settings *Settings) {
@@ -128,7 +101,7 @@ func updateLoop(store *DataStore, uiupdate chan struct{}, settings *Settings) {
     ticker := time.NewTicker(settings.Interval)
     for range ticker.C {
         update(store, uiupdate, settings)
-	}
+       }
 }
 
 func update(store *DataStore, uiupdate chan struct{}, settings *Settings) {
@@ -143,54 +116,65 @@ func update(store *DataStore, uiupdate chan struct{}, settings *Settings) {
     uiupdate <- struct{}{}
 }
 
-func buildLine(description string, target *Target, maxdesc uint16, maxwidth uint16) string {
-    spacing := uint16(2)
-    datalen := maxwidth - maxdesc - spacing
+func buildLine(description string, target *Target, settings *Settings) string {
+    datalen := settings.ScreenWidth - settings.TargetNameLength - 2
 
-    var desccolor string
-    descpart := fmt.Sprintf(fmt.Sprintf("%%-%ds", maxdesc), description)
-    if uint16(len(descpart)) > maxdesc {
-        descpart = fmt.Sprintf("%s...", descpart[:maxdesc - 3])
+    descpart := fmt.Sprintf(fmt.Sprintf("%%-%ds", settings.TargetNameLength), description)
+    if uint16(len(descpart)) > settings.TargetNameLength {
+        descpart = fmt.Sprintf("%s...", descpart[:settings.TargetNameLength-3])
     }
 
-    if target.Size > 0 {
-        if target.NewestMeasurement.PacketsSent == target.NewestMeasurement.PacketsRecv {
-            desccolor = ""
-        } else if target.NewestMeasurement.PacketsRecv == 0 {
-            desccolor = "\033[31m"
-        } else {
-            desccolor = "\033[33m"
-        }
-    } else {
-        // no measurements
+    var desccolor string
+
+    if len(target.Measurements) == 0 {
+        // no measurements, only return the target name
         return descpart
     }
 
+    // the newest measurement defines the color for the target name
+    if target.Measurements[len(target.Measurements)-1].PacketsSent == target.Measurements[len(target.Measurements)-1].PacketsRecv {
+        desccolor = ""
+    } else if target.Measurements[len(target.Measurements)-1].PacketsRecv == 0 {
+        desccolor = "\033[31m"
+    } else {
+        desccolor = "\033[33m"
+    }
+
     var vispart string
-    if target.Size < datalen {
+    if uint16(len(target.Measurements)) < datalen {
         // fill from the left with empty spaces
-        vispart = fmt.Sprintf(fmt.Sprintf("%%%ds", datalen - target.Size), "")
+        vispart = fmt.Sprintf(fmt.Sprintf("%%%ds", datalen-uint16(len(target.Measurements))), "")
     }
 
     lastcolor := ""
     charcolor := ""
     resetcolor := "\033[0m"
     char := ""
-    // figure out the color and character to print for each measurement
-    currentMeasurement := target.OldestMeasurement
-    for index := uint16(0); index < target.Size; index++ {
-        if currentMeasurement.PacketsSent == currentMeasurement.PacketsRecv {
-            if currentMeasurement.PacketsSent == 0 {
+    // visibleMeasurements is only the most recent part of the series that fits on the screen
+    var visibleMeasurements []Measurement
+    if uint16(len(target.Measurements)) > datalen {
+        visibleMeasurements = target.Measurements[uint16(len(target.Measurements))-datalen:]
+    } else {
+        visibleMeasurements = target.Measurements
+    }
+    for _, measurement := range visibleMeasurements {
+        // figure out the color and character to print for each measurement
+        if measurement.PacketsSent == measurement.PacketsRecv {
+            if measurement.PacketsSent == 0 {
+                // no echo requests sent -> print a space character (no color)
                 char = " "
                 charcolor = "\033[0m"  // reset to default
             } else {
+                // all replies received -> green
                 char = "█"
                 charcolor = "\033[32m"  // green
             }
-        } else if currentMeasurement.PacketsRecv == 0 {
+        } else if measurement.PacketsRecv == 0 {
+            // requests sent, but 0 replies received -> red
             char = "█"
             charcolor = "\033[31m"  // red
         } else {
+            // some (not all and not 0) replies received
             char = "█"
             charcolor = "\033[33m"  // yellow
         }
@@ -202,23 +186,21 @@ func buildLine(description string, target *Target, maxdesc uint16, maxwidth uint
             vispart = vispart + charcolor + char
             lastcolor = charcolor
         }
-
-        currentMeasurement = currentMeasurement.Next
     }
 
     // reset color at the end
     vispart = vispart + resetcolor
 
     // example output: "%s%2s%s"
-    formatstring := fmt.Sprintf("%%s%%s\033[0m%%%ds%%s\n", spacing)
+    formatstring := fmt.Sprintf("%%s%%s\033[0m%%%ds%%s\n", 2)
     return fmt.Sprintf(formatstring, desccolor, descpart, "", vispart)
 }
 
-func drawDisplay(store *DataStore, width uint16) {
+func drawDisplay(store *DataStore, settings *Settings) {
     // print one line for each target
     for index, target := range store.Targets {
-        line := buildLine(target.DisplayName, target, uint16(18), width)
-        io.WriteString(os.Stdout, fmt.Sprintf("\033[%d;0H", index + 1))
+        line := buildLine(target.DisplayName, target, settings)
+        io.WriteString(os.Stdout, fmt.Sprintf("\033[%d;0H", index+1))
         io.WriteString(os.Stdout, line)
     }
 }
@@ -227,26 +209,32 @@ func checkScreenSize(store *DataStore, settings *Settings) {
     newwidth := getWidth()
     // check if the screen width changed
     if newwidth != settings.ScreenWidth {
-        // resize the data
-        store.SetTargetCapacities(newwidth - 20) // FIXME Uint
+        // set new values, if they are sane
+        if newwidth > settings.TargetNameLength+2 {
+            // resize the capacity
+            // use the biggest seen window width, so a window
+            // can be made smaller and wider without losing history
+            capacity := newwidth - settings.TargetNameLength - 2
+            if capacity > settings.MeasurementCapacity {
+                settings.MeasurementCapacity = capacity
+            }
 
-        // clear the screen
-        io.WriteString(os.Stdout, "\033[H\033[2J")
-        io.WriteString(os.Stdout, "\033[s")
-        settings.ScreenWidth = newwidth
+            settings.ScreenWidth = newwidth
+        }
+
     }
 }
 
 func uiLoop(uiupdate chan struct{}, store *DataStore, settings *Settings) {
     // fill the screen initially
-    drawDisplay(store, settings.ScreenWidth)
+    drawDisplay(store, settings)
 
     // wait for an update, then repaint the screen
     for range uiupdate {
         store.Lock()
         // reset the cursor and redraw
         io.WriteString(os.Stdout, "\033[u")
-        drawDisplay(store, settings.ScreenWidth)
+        drawDisplay(store, settings)
         store.Unlock()
     }
 }
@@ -255,7 +243,7 @@ func makeTarget(address string, displayname string, settings *Settings) Target {
     target := Target{
         Address: address,
         DisplayName: displayname,
-        Capacity: uint16(10),
+        Measurements: make([]Measurement, settings.MeasurementCapacity),
     }
     return target
 }
@@ -280,11 +268,15 @@ func main() {
 
     settings := Settings{}
     settings.Interval = time.Duration(*interval * float64(time.Second))
-    settings.PacketInterval = time.Duration(int64(settings.Interval) / int64(2 * *count))
+    settings.PacketInterval = time.Duration(int64(settings.Interval) / int64(2**count))
     settings.Timeout = time.Duration(settings.Interval / 2)
     settings.Count = *count
+    settings.TargetNameLength = TargetNameLength
 
     var store DataStore
+
+    // check the screen size, so the data slices can be initialized with correct length
+    checkScreenSize(&store, &settings)
 
     if *targetfile == "" {
         // no target file specified → read targets from cmdline arguments
@@ -340,12 +332,14 @@ func main() {
             <-sigwinch
             store.Lock()
             checkScreenSize(&store, &settings)
+            // clear the screen
+            io.WriteString(os.Stdout, "\033[H\033[2J")
+            io.WriteString(os.Stdout, "\033[s")
+            // update the screen
             uiupdate <- struct{}{}
             store.Unlock()
         }
     }()
-
-    checkScreenSize(&store, &settings)
 
     // clear the screen and save cursor position
     io.WriteString(os.Stdout, "\033[H\033[2J")
