@@ -15,6 +15,8 @@ import (
     "unsafe"
 )
 
+const VersionString = "v0.1"
+
 type winsize struct {
     Row    uint16
     Col    uint16
@@ -267,7 +269,14 @@ func main() {
     interval := flag.Float64("i", 1.0, "update interval")
     count := flag.Int("c", 3, "echo requests per interval")
     targetfile := flag.String("f", "", "target list file (format: address displayname)")
+    // flag package doesn't support "--version" <.<
+    version := flag.Bool("v", false, "prints the myping version")
     flag.Parse()
+
+    if *version {
+        fmt.Println(VersionString)
+        return
+    }
 
     settings := Settings{}
     settings.Interval = time.Duration(*interval * float64(time.Second))
