@@ -15,7 +15,7 @@ import (
 	"unsafe"
 )
 
-const VersionString = "v0.1"
+const VersionString = "v0.2"
 const TargetNameLength = 18
 
 type winsize struct {
