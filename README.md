@@ -32,7 +32,7 @@ Target list files contain a ping-target and a display-name, separated by a space
 
 Example target list:
 ```
-# hostname without display name (displayed as "ripe.net")
+# hostname without display name (displayed as "eff.org")
 eff.org
 
 # IPv6 literal with display name
