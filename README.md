@@ -49,3 +49,5 @@ eff.org
 ## Installation
 
 Needs `go` to build. You can use `make` to fetch dependencies and build the binary. You can optionally run `make setcap` afterwards to set the capability `cap_net_raw`. Without this capability, the program can only send pings if you run it as root (or with `sudo`).
+
+If you are running Arch Linux you can install this package via [AUR](https://aur.archlinux.org/packages/myping/).
