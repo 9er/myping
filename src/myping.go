@@ -96,15 +96,20 @@ func probeTarget(wg *sync.WaitGroup, target *Target, settings *Settings) {
 }
 
 func updateLoop(store *DataStore, uiupdate chan struct{}, settings *Settings) {
+	// on startup, do one measurement and display the results immediately
+	update(store, settings)
+	checkPacketsSent(store)
+	uiupdate <- struct{}{}
+
 	// periodically start new measurements
-	update(store, uiupdate, settings)
 	ticker := time.NewTicker(settings.Interval)
 	for range ticker.C {
-		update(store, uiupdate, settings)
+		update(store, settings)
+		uiupdate <- struct{}{}
 	}
 }
 
-func update(store *DataStore, uiupdate chan struct{}, settings *Settings) {
+func update(store *DataStore, settings *Settings) {
 	store.Lock()
 	wg := sync.WaitGroup{}
 	for _, target := range store.Targets {
@@ -113,7 +118,21 @@ func update(store *DataStore, uiupdate chan struct{}, settings *Settings) {
 	}
 	wg.Wait()
 	store.Unlock()
-	uiupdate <- struct{}{}
+}
+
+func checkPacketsSent(store *DataStore) {
+	// check if packets were sent at all
+	// if not, there might be a problem with raw socket permissions
+	for _, target := range store.Targets {
+		if target.Measurements[len(target.Measurements)-1].PacketsSent > 0 {
+			// packets were sent, be quiet
+			return
+		}
+	}
+	// no PacketSent > 0
+	fmt.Println("No packets could be sent.")
+	fmt.Println("Please make sure that network is up and this program is run with correct permissions or cap_net_raw.")
+	os.Exit(1)
 }
 
 func buildLine(description string, target *Target, settings *Settings) string {
