@@ -16,7 +16,6 @@ import (
 )
 
 const VersionString = "v0.2"
-const TargetNameLength = 18
 
 type winsize struct {
 	Row    uint16
@@ -290,17 +289,22 @@ func main() {
 	settings.PacketInterval = time.Duration(int64(settings.Interval) / int64(2**count))
 	settings.Timeout = time.Duration(settings.Interval / 2)
 	settings.Count = *count
-	settings.TargetNameLength = TargetNameLength
 
 	var store DataStore
 
 	// check the screen size, so the data slices can be initialized with correct length
 	checkScreenSize(&store, &settings)
 
+	// longes display name length needed to set display spacing/widths
+	longestDisplayName := 0
+
 	if *targetfile == "" {
 		// no target file specified → read targets from cmdline arguments
 		store.Targets = make([]*Target, len(flag.Args()))
 		for index, address := range flag.Args() {
+			if len(address) > longestDisplayName {
+				longestDisplayName = len(address)
+			}
 			target := makeTarget(address, address, &settings)
 			store.Targets[index] = &target
 		}
@@ -333,9 +337,15 @@ func main() {
 			if len(elements) == 1 {
 				// only contains a target address/hostname, no displayname
 				target = makeTarget(elements[0], elements[0], &settings)
+				if len(elements[0]) > longestDisplayName {
+					longestDisplayName = len(elements[0])
+				}
 			} else if len(elements) == 2 {
 				// target address + displayname
 				target = makeTarget(elements[0], elements[1], &settings)
+				if len(elements[1]) > longestDisplayName {
+					longestDisplayName = len(elements[1])
+				}
 			} else {
 				// not sure how this could happen!?
 				fmt.Printf("Error in target list: line should contain, target and optionally a displayname, separated with space:\n%s\n", line)
@@ -344,6 +354,8 @@ func main() {
 			store.Targets[index] = &target
 		}
 	}
+
+	settings.TargetNameLength = uint16(longestDisplayName)
 
 	if len(store.Targets) == 0 {
 		// nothing to do...
